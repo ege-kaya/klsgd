@@ -233,7 +233,8 @@ def train_and_evaluate(model, optimizer, loss_fn, save_dir, train_dataloader, va
             label_pred = model(inputs)
             # Do the backpropagation with respect to the classification loss, but do not break down the
             # computational graph!
-            if args.optimizer == "klsgd" and (optimizer.dro_alg1 or optimizer.dro_alg2):
+            if args.optimizer == "klsgd" and (optimizer.alg4 or optimizer.alg5 
+                                              or optimizer.alg6 or optimizer.alg8):
                 class_loss = F.cross_entropy(label_pred, label_gts, reduction="none")
                 optimizer.sample_losses = class_loss
                 class_loss = class_loss.mean()
