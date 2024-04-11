@@ -127,7 +127,7 @@ class KLSGD(torch.optim.Optimizer):
         self.alg13 = alg13
         super(KLSGD, self).__init__(params, defaults)
         self.dir = -1 if self.robust else 1
-        # print(self.dir)
+        print(self.dir)
         self.adam = Adam(betas=(.9, .99)) if adam else None 
         if self.alg4 or self.alg5 or self.alg6 or self.alg8:
             self.sample_losses = None
@@ -139,36 +139,59 @@ class KLSGD(torch.optim.Optimizer):
                 if type(p.grad_sample) is list:
                     p.grad_sample = p.grad_sample[-1]
                 if self.alg4:
-                    pass
+                    idx = torch.argmax(self.sample_losses)
+                    mask = torch.zeros_like(self.sample_losses)
+                    mask[idx] = 1
+                    grad_weights = mask
                 elif self.alg5:
-                    pass
+                    idx = torch.argmin(self.sample_losses)
+                    mask = torch.zeros_like(self.sample_losses)
+                    mask[idx] = 1
+                    grad_weights = mask
                 elif self.alg6:
                     energy = self.sample_losses / self.reg
+                    grad_weights = F.softmax(energy, dim=0)
                 elif self.alg7:
                     energy = torch.norm(torch.flatten(p.grad_sample, 1), p=2, dim=1)**2 / self.reg
+                    grad_weights = F.softmax(energy, dim=0)
                 elif self.alg8:
                     energy = -self.sample_losses / self.reg
+                    grad_weights = F.softmax(energy, dim=0)
                 elif self.alg9:
                     energy = -torch.norm(torch.flatten(p.grad_sample, 1), p=2, dim=1)**2 / self.reg
+                    grad_weights = F.softmax(energy, dim=0)
                 elif self.alg10:
-                    pass
+                    norms = torch.norm(torch.flatten(p.grad_sample, 1), p=2, dim=1)
+                    idx = torch.argmax(norms)
+                    mask = torch.zeros_like(norms)
+                    mask[idx] = 1
+                    grad_weights = mask
                 elif self.alg11:
-                    pass
+                    norms = torch.norm(torch.flatten(p.grad_sample, 1), p=2, dim=1)
+                    idx = torch.argmin(norms)
+                    mask = torch.zeros_like(norms)
+                    mask[idx] = 1
+                    grad_weights = mask
                 elif self.alg12:
-                    pass
+                    dot_product = torch.sum(torch.flatten(p.grad) * torch.flatten(p.grad_sample, 1), dim=1)
+                    idx = torch.argmax(dot_product)
+                    mask = torch.zeros_like(dot_product)
+                    mask[idx] = 1
+                    grad_weights = mask
                 elif self.alg13:
-                    pass
+                    dot_product = torch.sum(torch.flatten(-p.grad) * torch.flatten(p.grad_sample, 1), dim=1)
+                    idx = torch.argmax(dot_product)
+                    mask = torch.zeros_like(dot_product)
+                    mask[idx] = 1
+                    grad_weights = mask
                 else:
                     # KLSGD algorithm 
                     dot_product = torch.sum(torch.flatten(p.grad) * torch.flatten(p.grad_sample, 1), dim=1)
                     energy = self.dir * self.lr * dot_product / self.reg # torch.exp(self.dir * self.lr * dot_product / self.reg)
                     # print(energy)
-                grad_weights = F.softmax(energy, dim=0)
+                    grad_weights = F.softmax(energy, dim=0)
         
                 weights.append(grad_weights)
-
-        if self.prev_weights is None:
-            self.prev_weights = weights
 
         return weights
 
@@ -188,11 +211,8 @@ class KLSGD(torch.optim.Optimizer):
                 if type(p.grad_sample) is list:
                     p.grad_sample = p.grad_sample[-1]
 
-                if self.dro_alg2:
-                    update.add_(torch.sum(weight/self.reg * p.grad_sample, axis=0))
-                else:
-                    product = weight.view(-1, *([1] * (p.grad_sample.dim() - 1))) * p.grad_sample
-                    update.add_(torch.sum(product, axis=0))
+                product = weight.view(-1, *([1] * (p.grad_sample.dim() - 1))) * p.grad_sample
+                update.add_(torch.sum(product, axis=0))
 
                 if self.adam is None:
                     p.data.add_(-self.lr * update)
@@ -318,17 +338,27 @@ def train_and_evaluate(model, optimizer, loss_fn, save_dir, train_dataloader, va
 
 
 if __name__ == "__main__":
-
+    NAME = "sgd"
     parser = argparse.ArgumentParser()
     # KLSGD parameters 
     parser.add_argument("--optimizer", default="sgd", type=str, choices=("sgd", "adam", "klsgd"), help="type of the optimizer")
     parser.add_argument("--robust", default=False, action='store_true', help="switch for being robust or performance oriented")
+    parser.add_argument("--alg4", default=False, action='store_true', help="switch for algorithm 4")
+    parser.add_argument("--alg5", default=False, action='store_true', help="switch for algorithm 5")
+    parser.add_argument("--alg6", default=False, action='store_true', help="switch for algorithm 6")
+    parser.add_argument("--alg7", default=False, action='store_true', help="switch for algorithm 7")
+    parser.add_argument("--alg8", default=False, action='store_true', help="switch for algorithm 8")
+    parser.add_argument("--alg9", default=False, action='store_true', help="switch for algorithm 9")
+    parser.add_argument("--alg10", default=False, action='store_true', help="switch for algorithm 10")
+    parser.add_argument("--alg11", default=False, action='store_true', help="switch for algorithm 11")
+    parser.add_argument("--alg12", default=False, action='store_true', help="switch for algorithm 12")
+    parser.add_argument("--alg13", default=False, action='store_true', help="switch for algorithm 13")
     parser.add_argument("--reg", default=1e-3, type=float, help="regularizer for KL term")
     parser.add_argument("--adam", default=False, action='store_true', help="whether to use Adam or not for KLSGD")
     # classic training parameters
     parser.add_argument("--lr", default=1e-3, type=float, help="learning rate")
     parser.add_argument("--epochs", default=25, type=int, help="number of epochs for training")
-    parser.add_argument("--device_idx", default=0, type=int, help="cuda device idx")
+    parser.add_argument("--device_idx", default=1, type=int, help="cuda device idx")
     parser.add_argument("--batch_size", default=32, type=int, help="mini-batch size for training")
     parser.add_argument("--early", default=5, type=int, help="early stopping limit")
 
@@ -354,7 +384,33 @@ if __name__ == "__main__":
     resnet = ModuleValidator.fix(resnet)
 
     if args.optimizer == "klsgd":
+        NAME = "klsgd"
         resnet = GradSampleModule(resnet)
+    if args.optimizer == "klsgd" and args.robust:
+        NAME += "_robust"
+    elif args.optimizer == "klsgd":
+        NAME += "_performance"
+
+    if args.alg4:
+        NAME = "alg4"
+    elif args.alg5:
+        NAME = "alg5"
+    elif args.alg6:
+        NAME = "alg6"
+    elif args.alg7:
+        NAME = "alg7"
+    elif args.alg8:
+        NAME = "alg8"
+    elif args.alg9:
+        NAME = "alg9"
+    elif args.alg10:
+        NAME = "alg10"
+    elif args.alg11:
+        NAME = "alg11"
+    elif args.alg12:
+        NAME = "alg12"
+    elif args.alg13:
+        NAME = "alg13"
 
     data = torchvision.datasets.CIFAR10(root="./CIFAR10", transform=convert, download=True)
 
@@ -429,7 +485,10 @@ if __name__ == "__main__":
 
     if args.optimizer == "klsgd":
         print("Using KLSGD")
-        optimizer = KLSGD(resnet.parameters(), robust=args.robust, lr=args.lr, reg=args.reg)
+        optimizer = KLSGD(resnet.parameters(), robust=args.robust, lr=args.lr, reg=args.reg,
+                          alg4=args.alg4, alg5=args.alg5, alg6=args.alg6, alg7=args.alg7,
+                          alg8=args.alg8, alg9=args.alg9, alg10=args.alg10, alg11=args.alg11,
+                          alg12=args.alg12, alg13=args.alg13)
     elif args.optimizer == "sgd":
         print("Using SGD")
         optimizer = torch.optim.SGD(resnet.parameters(), lr=args.lr)
@@ -456,24 +515,13 @@ if __name__ == "__main__":
         early=args.early
     )
 
-    # plt.plot(train_loss)
-    # plt.ylabel("Loss")
-    # plt.xlabel("Epochs")
-    # plt.savefig(f"losses_{args.optimizer}.png", dpi=400, bbox_inches="tight")
-    # plt.close()
-
-    with open(f"loss_{args.optimizer}", "wb") as f:
+    with open(f"loss_{NAME}.pkl", "wb") as f:
         pkl.dump(train_loss, f)
     
     s = sns.heatmap(cf, annot=True, fmt='d')
     fig = s.get_figure()
-    fig.savefig(f"cf_{args.optimizer}.png", dpi=400, bbox_inches="tight")
+    fig.savefig(f"cf_{NAME}.png", dpi=400, bbox_inches="tight")
     plt.close()
 
-    with open(f"acc_{args.optimizer}", "wb") as f:
+    with open(f"acc_{NAME}.pkl", "wb") as f:
         pkl.dump(test_acc, f)
-    # plt.plot(test_acc)
-    # plt.ylabel("Test accuracy")
-    # plt.xlabel("Epochs")
-    # plt.savefig(f"accs_{args.optimizer}.png", dpi=400, bbox_inches="tight")
-    # plt.close()
