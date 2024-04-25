@@ -36,7 +36,7 @@ class Adam(object):
         
 
 class KLSGD(torch.optim.Optimizer):
-    def __init__(self, params, robust=True, lr=1e-3, reg=0.5, adam=False, alg_no=-1, topk=None):
+    def __init__(self, params, robust=False, lr=1e-3, reg=0.5, adam=False, alg_no=-1, topk=None):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if reg < 0.0:
@@ -50,15 +50,15 @@ class KLSGD(torch.optim.Optimizer):
         self.alg_no = alg_no
         self.topk_ratio = topk
         super(KLSGD, self).__init__(params, defaults)
-        self.dir = -1 if self.robust else 1
+        self.dir = 1 if self.robust else -1
         self.adam = Adam(betas=(.9, .99)) if adam else None 
-        if alg_no in (4,5,6,8):
+        if alg_no in (4, 5, 6, 8, 18, 19):
             self.sample_losses = None
 
     def calc_weights(self):
         weights = []
 
-        if self.alg_no in (10,11,12,13,14,15):
+        if self.alg_no in (10, 11, 12, 13, 14, 15, 16, 17, 18, 19):
             total_weight = 0 
 
         layer_count = 0
@@ -102,6 +102,19 @@ class KLSGD(torch.optim.Optimizer):
                 elif self.alg_no == 9:
                     energy = -torch.norm(torch.flatten(p.grad_sample, 1), p=2, dim=1)**2 / self.reg
                     grad_weights = F.softmax(energy, dim=0)
+                # max loss topk
+                elif self.alg_no == 18:
+                    k=int(self.topk_ratio * len(self.sample_losses))
+                    _, indices = torch.topk(self.sample_losses, k=k)
+                    mask = torch.zeros_like(self.sample_losses)
+                    mask[indices] = 1/k
+                    grad_weights = mask
+                elif self.alg_no == 19:
+                    k = int(self.topk_ratio * len(self.sample_losses))
+                    _, indices = torch.topk(self.sample_losses, k=k, largest=False)
+                    mask = torch.zeros_like(self.sample_losses)
+                    mask[indices] = 1/k
+                    grad_weights = mask
                 else:
                     # KLSGD algorithm 
                     dot_product = torch.sum(torch.flatten(p.grad) * torch.flatten(p.grad_sample, 1), dim=1)
@@ -119,10 +132,11 @@ class KLSGD(torch.optim.Optimizer):
             mask[idx] = 1 
             weights = torch.tile(mask[None,:], (layer_count, 1))
         # choose maximum top-k elements
-        elif self.alg_no in (14,16):
-            _, indices = torch.topk(total_weight, k=int(self.topk_ratio * len(total_weight)))
+        elif self.alg_no in (14, 16):
+            k = int(self.topk_ratio * len(total_weight))
+            _, indices = torch.topk(total_weight, k=k)
             mask = torch.zeros_like(total_weight)
-            mask[indices] = 1 
+            mask[indices] = 1/k
             weights = torch.tile(mask[None,:], (layer_count, 1))
         elif self.alg_no in (11, 13):
             idx = torch.argmin(total_weight)
@@ -131,9 +145,10 @@ class KLSGD(torch.optim.Optimizer):
             weights = torch.tile(mask[None,:], (layer_count, 1))
         # choose minimum top-k elements
         elif self.alg_no in (15, 17):
-            _, indices = torch.topk(total_weight, k=int(self.topk_ratio * len(total_weight)), largest=False)
+            k = int(self.topk_ratio * len(total_weight))
+            _, indices = torch.topk(total_weight, k=k, largest=False)
             mask = torch.zeros_like(total_weight)
-            mask[indices] = 1 
+            mask[indices] = 1/k
             weights = torch.tile(mask[None,:], (layer_count, 1))
 
         return weights

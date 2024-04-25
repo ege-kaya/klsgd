@@ -28,6 +28,7 @@ maxnorm_hard: 10    minnorm_hard: 11
 maxcorr_hard: 12    mincorr_hard: 13
 maxcorr_topk: 14    mincorr_topk: 15
 maxnorm_topk: 16    minnorm_topk: 17
+maxloss_topk: 18    minloss_topk: 19
 '''
 
 argparser.add_argument("--optimizer", default="sgd", type=str, choices=["sgd", "adam", 
@@ -38,15 +39,16 @@ argparser.add_argument("--optimizer", default="sgd", type=str, choices=["sgd", "
                                                               "maxnorm_hard", "minnorm_hard",
                                                               "maxcorr_hard", "mincorr_hard",
                                                               "maxcorr_topk", "mincorr_topk",
-                                                              "maxnorm_topk", "minnorm_topk"],
+                                                              "maxnorm_topk", "minnorm_topk",
+                                                              "maxloss_topk", "minloss_topk"],
                                                               help="optimizer to use")
-argparser.add_argument("--reg", default=1e-5, type=float, help="regularizer for KL term")
+argparser.add_argument("--reg", default=1e-3, type=float, help="regularizer for KL term")
 argparser.add_argument("--lr", default=1e-3, type=float, help="learning rate")
 argparser.add_argument("--lr_decay", default=0.1, type=float, help="learning rate decay")
 argparser.add_argument("--decay_schedule", default=10, type=int, help="decay schedule")
 argparser.add_argument("--epochs", default=25, type=int, help="number of epochs for training")
 argparser.add_argument("--device_idx", default=0, type=int, help="cuda device idx")
-argparser.add_argument("--batch_size", default=32, type=int, help="mini-batch size for training")
+argparser.add_argument("--batch_size", default=64, type=int, help="mini-batch size for training")
 argparser.add_argument("--num_workers", default=4, type=int, help="number of workers on cpu for dataloaders")
 # argparser.add_argument("--seed", default=44, type=int, help="random seed")
 argparser.add_argument("--dataset", default="MNIST", type=str, choices=["semeion", "MNIST",
@@ -214,9 +216,6 @@ elif args.dataset == 'semeion':
 else:
     raise ValueError(f"Invalid dataset: {args.dataset}")
 
-train_loader = DataLoader(train_data, batch_size=args.batch_size, sampler=train_Sampler, shuffle=Shuffle)
-test_loader = DataLoader(test_data, batch_size=args.batch_size, sampler=test_Sampler, shuffle=False)
-
 model = args.model
 
 
@@ -224,67 +223,70 @@ model = args.model
 MODEL SELECTION
 '''
 
-if model == 'LeNet':
-    model = LeNet(nc, nh, nw, num_class).to(device)
-elif model == 'ResNet18':
-    model = PreActResNet18(nc, num_class).to(device)
-elif model == 'logistic' or args.model == 'SVM':
-    dx = nh * nw * nc     
-    model = Linear(dx, num_class).to(device)
-else:
-    raise ValueError(f"Invalid model: {args.model}")
-
-
-model = ModuleValidator.fix(model)
+def get_model(model_name):
+    model = None
+    if model_name == 'LeNet':
+        model = LeNet(nc, nh, nw, num_class).to(device)
+    elif model_name == 'ResNet18':
+        model = PreActResNet18(nc, num_class).to(device)
+    elif model_name == 'logistic' or args.model == 'SVM':
+        dx = nh * nw * nc     
+        model = Linear(dx, num_class).to(device)
+    else:
+        raise ValueError(f"Invalid model: {args.model}")
+    
+    return ModuleValidator.fix(model)
 
 
 '''
 OPTIMIZER SELECTION
 '''
-
-if optimizer == "sgd":
-    optimizer = torch.optim.SGD(params=model.parameters(), lr=lr)
-elif optimizer == "adam":
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
-elif optimizer == "klsgd_r":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, robust=True)
-elif optimizer == "klsgd_p":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg)
-elif optimizer == "maxloss_hard":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=4)
-elif optimizer == "minloss_hard":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=5)
-elif optimizer == "maxloss_soft":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, alg_no=6)
-elif optimizer == "maxnorm_soft":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, alg_no=7)
-elif optimizer == "minloss_soft":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, alg_no=8)
-elif optimizer == "minnorm_soft":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, alg_no=9)
-elif optimizer == "maxnorm_hard":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=10)
-elif optimizer == "minnorm_hard":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=11)
-elif optimizer == "maxcorr_hard":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=12)
-elif optimizer == "mincorr_hard":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=13)
-elif optimizer == "maxcorr_topk":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=14, topk=topk_ratio)
-elif optimizer == "mincorr_topk":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=15, topk=topk_ratio)
-elif optimizer == "maxnorm_topk":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=16, topk=topk_ratio)
-elif optimizer == "minnorm_topk":
-    optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=17, topk=topk_ratio)
-else:
-    raise ValueError(f"Invalid optimizer: {args.optimizer}")
-
-if not args.optimizer == "sgd" and not args.optimizer == "adam":
-    model = GradSampleModule(model)
-
-scheduler = lr_scheduler.StepLR(optimizer, step_size=args.decay_schedule, gamma=args.lr_decay)
+def get_optimizer(optimizer_name, model):
+    optimizer = None
+    if optimizer_name == "sgd":
+        optimizer = torch.optim.SGD(params=model.parameters(), lr=lr)
+    elif optimizer_name == "adam":
+        optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
+    elif optimizer_name == "klsgd_r":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, robust=True)
+    elif optimizer_name == "klsgd_p":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg)
+    elif optimizer_name == "maxloss_hard":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=4)
+    elif optimizer_name == "minloss_hard":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=5)
+    elif optimizer_name == "maxloss_soft":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, alg_no=6)
+    elif optimizer_name == "maxnorm_soft":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, alg_no=7)
+    elif optimizer_name == "minloss_soft":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, alg_no=8)
+    elif optimizer_name == "minnorm_soft":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, alg_no=9)
+    elif optimizer_name == "maxnorm_hard":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=10)
+    elif optimizer_name == "minnorm_hard":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=11)
+    elif optimizer_name == "maxcorr_hard":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=12)
+    elif optimizer_name == "mincorr_hard":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=13)
+    elif optimizer_name == "maxcorr_topk":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=14, topk=topk_ratio)
+    elif optimizer_name == "mincorr_topk":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=15, topk=topk_ratio)
+    elif optimizer_name == "maxnorm_topk":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=16, topk=topk_ratio)
+    elif optimizer_name == "minnorm_topk":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=17, topk=topk_ratio)
+    elif optimizer_name == "maxloss_topk":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=18, topk=topk_ratio)
+    elif optimizer_name == "minloss_topk":
+        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=1, topk=topk_ratio)
+    else:
+        raise ValueError(f"Invalid optimizer: {args.optimizer}")
+    
+    return optimizer
 
 
 '''
@@ -292,9 +294,9 @@ LOSS SELECTION
 '''
 
 if args.model == "SVM":
-    loss = MultiClassHingeLoss()
+    loss = MultiClassHingeLoss(reduction="none")
 else:
-    loss = nn.CrossEntropyLoss(reduction='mean')
+    loss = nn.CrossEntropyLoss(reduction='none')
 
 
 
@@ -308,16 +310,22 @@ if __name__ == "__main__":
         torch.backends.cudnn.benchmarks=False
         torch.autograd.set_detect_anomaly(True)
 
-        losses, accs = train(model, optimizer, scheduler, loss, train_loader, test_loader, epochs, args.optimizer, device)
+        train_loader = DataLoader(train_data, batch_size=args.batch_size, sampler=train_Sampler, shuffle=Shuffle)
+        test_loader = DataLoader(test_data, batch_size=args.batch_size, sampler=test_Sampler, shuffle=False)
 
-        with open(f"{save_path}/acc_{args.optimizer}_{seed}.pkl", "wb") as f:
+        model = get_model(args.model)
+        if not args.optimizer == "sgd" and not args.optimizer == "adam":
+            model = GradSampleModule(model)
+                
+        optimizer = get_optimizer(args.optimizer, model)
+        # scheduler = lr_scheduler.StepLR(optimizer, step_size=args.decay_schedule, gamma=args.lr_decay)
+        losses, accs = train(model, optimizer, loss, train_loader, test_loader, epochs, args.optimizer, device)
+
+        with open(f"{save_path}/acc_{args.optimizer}_{seed}_{lr}.pkl", "wb") as f:
             pkl.dump(accs, f)
         
-        with open(f"{save_path}/loss_{args.optimizer}_{seed}.pkl", "wb") as f:
+        with open(f"{save_path}/loss_{args.optimizer}_{seed}_{lr}.pkl", "wb") as f:
             pkl.dump(losses, f)
-
-    plot(save_path, plot_path, seeds, args.optimizer)
-
 
 
 

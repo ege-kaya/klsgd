@@ -22,7 +22,7 @@ class MultiClassHingeLoss(nn.Module):
 
         return loss 
     
-def train(model, optimizer, scheduler, loss_fn, train_dataloader, test_dataloader, epochs, alg, device):
+def train(model, optimizer, loss_fn, train_dataloader, test_dataloader, epochs, alg, device):
 
     train_loss = []
     test_acc = []
@@ -33,7 +33,6 @@ def train(model, optimizer, scheduler, loss_fn, train_dataloader, test_dataloade
         
     for epoch in range(epochs):
         model.train()
-        scheduler.step()
         # Keeping track of running losses.
         class_running_loss = 0.
         for i, data in enumerate(train_dataloader):
@@ -45,20 +44,19 @@ def train(model, optimizer, scheduler, loss_fn, train_dataloader, test_dataloade
             
             # Get the outputs from the model
             label_pred = model(inputs)
-            # Do the backpropagation with respect to the classification loss, but do not break down the
-            # computational graph!
 
-            if alg in ["maxloss_hard", "minloss_hard", "maxloss_soft", "minloss_soft"]:
-                class_loss = loss_fn(label_pred, label_gts, reduction="none")
+            if alg in ["maxloss_hard", "minloss_hard", "maxloss_soft", "minloss_soft", "maxloss_topk", "minloss_topk"]:
+                class_loss = loss_fn(label_pred, label_gts)
                 optimizer.sample_losses = class_loss
                 class_loss = class_loss.mean()
             else:
-                class_loss = loss_fn(label_pred, label_gts)
+                class_loss = loss_fn(label_pred, label_gts).mean()
             
             
             optimizer.zero_grad()
             class_loss.backward()
             optimizer.step()
+            # scheduler.step()
             
             # Update the running losses.
             class_running_loss += torch.mean(class_loss).item()
