@@ -42,7 +42,7 @@ argparser.add_argument("--optimizer", default="sgd", type=str, choices=["sgd", "
                                                               "maxnorm_topk", "minnorm_topk",
                                                               "maxloss_topk", "minloss_topk"],
                                                               help="optimizer to use")
-argparser.add_argument("--reg", default=1e-3, type=float, help="regularizer for KL term")
+argparser.add_argument("--reg", default=1e-2, type=float, help="regularizer for KL term")
 argparser.add_argument("--lr", default=1e-3, type=float, help="learning rate") # 1e-3
 argparser.add_argument("--lr_decay", default=0.2, type=float, help="learning rate decay") # 0.2 
 argparser.add_argument("--weight_decay", default=1e-4, type=float, help="weight decay parameter")
@@ -52,7 +52,7 @@ argparser.add_argument("--epochs", default=50, type=int, help="number of epochs 
 argparser.add_argument("--device_idx", default=0, type=int, help="cuda device idx")
 argparser.add_argument("--batch_size", default=64, type=int, help="mini-batch size for training") # 64
 argparser.add_argument("--num_workers", default=4, type=int, help="number of workers on cpu for dataloaders")
-# argparser.add_argument("--seed", default=44, type=int, help="random seed")
+argparser.add_argument("--seed", default=44, type=int, help="random seed")
 argparser.add_argument("--dataset", default="MNIST", type=str, choices=["semeion", "MNIST",
                                                                         "KMNIST", "FMNIST",
                                                                         "CIFAR10", "CIFAR100",

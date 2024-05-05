@@ -27,10 +27,7 @@ class MultiClassHingeLoss(nn.Module):
         return loss 
 
 def output(data_loader, model, alg, train=False):
-    if train is True:
-        model.train()
-    elif train is False:
-        model.eval()
+    model.eval()
     total_loss = 0    
     total_correct = 0      
     total_size = 0   
@@ -69,19 +66,19 @@ def train(model, optimizer, weight_calculator, loss_fn, train_dataloader, test_d
             label_gts = label_gts.to(device)
             
             # Get the outputs from the model
+            optimizer.zero_grad()
             label_pred = model(inputs)
             sample_loss = loss_fn(label_pred, label_gts)
             mean_loss = torch.mean(sample_loss)
-            optimizer.zero_grad()
             mean_loss.backward()
 
             if alg != 'sgd':
-                weight_calculator.sample_losses = sample_loss
+                weight_calculator.sample_losses = sample_loss.detach()
                 weights = weight_calculator.calc_weights()
-                label_pred = model(inputs)
-                sample_loss = loss_fn(label_pred, label_gts)
-                new_loss = torch.sum(weights * sample_loss)
                 optimizer.zero_grad()
+                label_pred = model(inputs)
+                sample_loss2 = loss_fn(label_pred, label_gts)
+                new_loss = torch.sum(weights * sample_loss2)
                 new_loss.backward()
 
             optimizer.step()

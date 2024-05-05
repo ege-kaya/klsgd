@@ -40,8 +40,7 @@ class WeightCalculator(torch.optim.Optimizer):
         super(WeightCalculator, self).__init__(params, defaults)
         self.params = params 
         self.alg_name = alg_name 
-        if 'loss' in alg_name:
-            self.sample_losses = None
+        self.sample_losses = None
         self.topk_ratio = topk_ratio
         self.reg = reg
     
@@ -101,7 +100,7 @@ class WeightCalculator(torch.optim.Optimizer):
                         total_weight += torch.flatten(p.grad_sample, 1)**2 / self.reg
                     # using negative gradient norm in exponential
                     elif self.alg_name == 'minnorm_soft':
-                        total_weight += -torch.flatten(p.grad_sample, 1)**2 / self.regression  
+                        total_weight += -torch.flatten(p.grad_sample, 1)**2 / self.reg  
 
             if self.alg_name in ['maxnorm_hard', 'maxcorr_hard']:
                 idx = torch.argmax(total_weight)
