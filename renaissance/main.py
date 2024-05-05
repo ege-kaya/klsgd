@@ -48,7 +48,7 @@ argparser.add_argument("--lr_decay", default=0.2, type=float, help="learning rat
 argparser.add_argument("--weight_decay", default=1e-4, type=float, help="weight decay parameter")
 argparser.add_argument("--momentum", default=0.9, type=float, help="momentum parameter")
 argparser.add_argument("--decay_schedule", default=30, type=int, help="decay schedule") # 10? 
-argparser.add_argument("--epochs", default=80, type=int, help="number of epochs for training")
+argparser.add_argument("--epochs", default=50, type=int, help="number of epochs for training")
 argparser.add_argument("--device_idx", default=0, type=int, help="cuda device idx")
 argparser.add_argument("--batch_size", default=64, type=int, help="mini-batch size for training") # 64
 argparser.add_argument("--num_workers", default=4, type=int, help="number of workers on cpu for dataloaders")
@@ -61,7 +61,7 @@ argparser.add_argument("--dataset", default="MNIST", type=str, choices=["semeion
 argparser.add_argument("--model", default="LeNet", type=str, choices=["LeNet", "logistic", 
                                                                       "SVM", "ResNet18"])
 argparser.add_argument("--aug", default=False, action='store_true', help="whether to augment data")
-argparser.add_argument("--topk_ratio", default=0.25, type=float, help="ratio of the top-k elements chosen from the batch")
+argparser.add_argument("--topk_ratio", default=1, type=float, help="ratio of the top-k elements chosen from the batch")
 
 # file managment options 
 argparser.add_argument("--save_path", default="./results", type=str, help="directory for the loss/accuracy history")
@@ -280,7 +280,7 @@ if __name__ == "__main__":
             model = GradSampleModule(model)
                 
         #optimizer = get_optimizer(args.optimizer, model)
-        weight_calculator = WeightCalculator(params=model.parameters(), alg_name=args.optimizer, topk_ratio=args.topk_ratio)
+        weight_calculator = WeightCalculator(params=model.parameters(), alg_name=args.optimizer, topk_ratio=args.topk_ratio, reg=args.reg)
         optimizer = torch.optim.SGD(params=model.parameters(), lr=lr, weight_decay=args.weight_decay, momentum=args.momentum)
         # scheduler = lr_scheduler.StepLR(optimizer, step_size=args.decay_sch
         losses, accs = train(model, optimizer, weight_calculator, loss, train_loader, test_loader, epochs, args.optimizer, device)

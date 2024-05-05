@@ -35,7 +35,7 @@ class Adam(object):
 
         
 class WeightCalculator(torch.optim.Optimizer):
-    def __init__(self, params, alg_name, topk_ratio=None):
+    def __init__(self, params, alg_name, topk_ratio=None, reg=None):
         defaults = dict(lr=0, reg=0)
         super(WeightCalculator, self).__init__(params, defaults)
         self.params = params 
@@ -43,8 +43,10 @@ class WeightCalculator(torch.optim.Optimizer):
         if 'loss' in alg_name:
             self.sample_losses = None
         self.topk_ratio = topk_ratio
+        self.reg = reg
     
     def calc_weights(self):
+        batch_size = len(self.sample_losses)
         if 'loss' in self.alg_name:
             # only sample with the worst loss used 
             if self.alg_name == 'maxloss_hard':
@@ -66,13 +68,13 @@ class WeightCalculator(torch.optim.Optimizer):
                 weights = F.softmax(-self.sample_losses / self.reg, dim=0)
             # max loss topk
             elif self.alg_name == 'maxloss_topk':
-                k=int(self.topk_ratio * len(self.sample_losses))
+                k=int(self.topk_ratio * batch_size)
                 _, indices = torch.topk(self.sample_losses, k=k)
                 mask = torch.zeros_like(self.sample_losses)
                 mask[indices] = 1/k
                 weights = mask
             elif self.alg_name == 'minloss_topk':
-                k = int(self.topk_ratio * len(self.sample_losses))
+                k = int(self.topk_ratio * batch_size)
                 _, indices = torch.topk(self.sample_losses, k=k, largest=False)
                 mask = torch.zeros_like(self.sample_losses)
                 mask[indices] = 1/k
@@ -93,7 +95,7 @@ class WeightCalculator(torch.optim.Optimizer):
                         total_weight += torch.sum(torch.flatten(p.grad_sample, 1) ** 2, dim=1)
                     # only sample with the largest/negative positive correlation 
                     elif 'corr' in self.alg_name:
-                        total_weight += torch.sum(torch.flatten(p.grad) * torch.flatten(p.grad_sample, 1), dim=1)
+                        total_weight += torch.sum(torch.flatten(p.grad) * torch.flatten(p.grad_sample, 1), dim=1) / self.reg 
                     # using gradient norm in exponential
                     elif self.alg_name == 'maxnorm_soft':
                         total_weight += torch.flatten(p.grad_sample, 1)**2 / self.reg
@@ -109,9 +111,9 @@ class WeightCalculator(torch.optim.Optimizer):
                 #weights = torch.tile(mask[None,:], (layer_count, 1))
             # choose maximum top-k elements
             elif self.alg_name in ['maxcorr_topk', 'maxnorm_topk']:
-                k = int(self.topk_ratio * len(total_weight))
+                k = int(self.topk_ratio * batch_size)
                 _, indices = torch.topk(total_weight, k=k)
-                mask = torch.zeros_like(total_weight)
+                mask = torch.zeros_like(self.sample_losses)
                 mask[indices] = 1/k
                 weights = mask
                 #weights = torch.tile(mask[None,:], (layer_count, 1))
@@ -125,12 +127,14 @@ class WeightCalculator(torch.optim.Optimizer):
             elif self.alg_name in ['mincorr_topk', 'minnorm_topk']:
                 k = int(self.topk_ratio * len(total_weight))
                 _, indices = torch.topk(total_weight, k=k, largest=False)
-                mask = torch.zeros_like(total_weight)
+                mask = torch.zeros_like(self.sample_losses)
                 mask[indices] = 1/k 
                 weights = mask
             elif self.alg_name in ['maxcorr_soft', 'mincorr_soft', 'maxnorm_soft', 'minnorm_soft', 'poscorr_soft']:
                 if self.alg_name == 'poscorr_soft':
                     total_weight = torch.where(total_weight > 0, total_weight, 0)
+                elif 'min' in self.alg_name:
+                    total_weight *= -1 
                 weights = F.softmax(total_weight, dim=0)
 
         return weights

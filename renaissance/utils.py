@@ -7,6 +7,7 @@ import numpy as np
 from pathlib import Path 
 import copy 
 import random
+import torch.nn.functional as F 
 
 
 class MultiClassHingeLoss(nn.Module):
@@ -24,16 +25,38 @@ class MultiClassHingeLoss(nn.Module):
             loss = torch.sum(loss, dim=1) / output.size()[1]
 
         return loss 
+
+def output(data_loader, model, alg, train=False):
+    if train is True:
+        model.train()
+    elif train is False:
+        model.eval()
+    total_loss = 0    
+    total_correct = 0      
+    total_size = 0   
+    for batch_idx, (x, y) in enumerate(data_loader):
+        x, y = x.cuda(), y.cuda()
+        h1 = model(x)
+        y_hat = h1.max(1)[1]
+        if alg == 'SVM':
+            total_loss += torch.mean(hinge_loss(h1, y)).item() * y.size(0)
+        else:                
+            total_loss += F.cross_entropy(h1, y).item() * y.size(0)
+        total_correct += y_hat.eq(y.data).cpu().sum()                
+        total_size += y.size(0)    
+    # print
+    total_loss /= total_size 
+    total_acc = 100. * float(total_correct) / float(total_size)  
+    return (total_loss, total_acc)  
     
 def train(model, optimizer, weight_calculator, loss_fn, train_dataloader, test_dataloader, epochs, alg, device):
 
-    train_loss = []
-    test_acc = []
+    train_loss, train_acc, test_loss, test_acc = [],[],[],[]
 
     # Keep track of the classification and regression losses for plotting later.
     model = model.to(device)
     print(f"Using device: {device}")
-        
+
     for epoch in range(epochs):
         model.train()
         # Keeping track of running losses.
@@ -73,33 +96,35 @@ def train(model, optimizer, weight_calculator, loss_fn, train_dataloader, test_d
                 if (i+1) % 100 == 0:
                     print("[epoch: %d, batch: %5d] class. loss: %.3f" % (epoch+1, i+1, mean_loss))
                 class_running_loss = 0.0
-                train_loss.append(mean_loss)
-        
-        with torch.no_grad():
-            model.eval()
-            total_class_loss = 0
-            correct = 0
-            total = 0
-            # Exactly the same stuff we do in training, just on the validation data and with no training, only
-            # evaluation!
-            for i, data in enumerate(test_dataloader):
-                inputs, label_gts = data
-                inputs = inputs.to(device)
-                label_gts = label_gts.to(device)
-                label_pred = model(inputs)
-                total_class_loss += torch.mean(loss_fn(label_pred, label_gts)).item()
-                
-                # Check the Accuracy of the model 
-                _, label_pred = torch.max(label_pred, dim=1)
-                # Update the tallies for total examples considered and correctly classified
-                correct += torch.eq(label_gts, label_pred).sum()
-                total += label_gts.shape[0]
-            
-            # At the end, calculate validation accuracy
-            accuracy = correct / total
-            test_acc.append(accuracy.item())
-            print("test accuracy", accuracy)
-            print("test loss", total_class_loss / len(test_dataloader))
+                #train_loss.append(mean_loss)
+        optimizer = lr_scheduler(optimizer, epoch + 1)
+        # evaluate the loss & accuracy of the model over train & test datasets 
+        (tr_loss, tr_acc) = output(train_dataloader, model, alg, train=True)
+        (te_loss, te_acc) = output(test_dataloader, model, alg, train=False)
+        # save the losses & accuracies 
+        train_loss.append(tr_loss)
+        train_acc.append(tr_acc)
+        test_loss.append(te_loss)
+        test_acc.append(te_acc)
+
+        # display the values 
+        print("*"*20)
+        print(f"train accuracy: {tr_acc}")
+        print(f"test accuracy: {te_acc}")
+        print("*"*20)
+    
+        # update the top-k ratio
+        if tr_acc >= 99.5:
+            weight_calculator.topk_ratio = 0.0625
+            optimizer = lr_decay_func(optimizer, lr_decay=0.5)
+        elif tr_acc >= 95.0:
+            weight_calculator.topk_ratio = 0.125
+        elif tr_acc >= 90.0:
+            weight_calculator.topk_ratio = 0.25
+        elif tr_acc >= 80.0:
+            weight_calculator.topk_ratio = 0.5
+
+
 
     return train_loss, test_acc
 
@@ -248,4 +273,44 @@ if __name__ == '__main__':
     plt.savefig(f"{plot_path}/acc.png", dpi=400, bbox_inches="tight")
     plt.close()
 
+def lr_decay_func(optimizer, lr_decay=0.1):
+    for param_group in optimizer.param_groups:
+        param_group['lr'] *= lr_decay
+    return optimizer    
+def lr_scheduler(optimizer, epoch, lr_decay=0.1, interval=10):
+    #if args.data_aug == 0:
+    if epoch == 10 or epoch == 50:
+        optimizer = lr_decay_func(optimizer, lr_decay=lr_decay) 
+    #if args.data_aug == 1:
+    #    if epoch == 10 or epoch == 100:
+    #        optimizer = lr_decay_func(optimizer, lr_decay=lr_decay)                   
+    return optimizer
 
+
+'''
+        with torch.no_grad():
+            model.eval()
+            total_class_loss = 0
+            correct = 0
+            total = 0
+            # Exactly the same stuff we do in training, just on the validation data and with no training, only
+            # evaluation!
+            for i, data in enumerate(test_dataloader):
+                inputs, label_gts = data
+                inputs = inputs.to(device)
+                label_gts = label_gts.to(device)
+                label_pred = model(inputs)
+                total_class_loss += torch.mean(loss_fn(label_pred, label_gts)).item()
+                
+                # Check the Accuracy of the model 
+                _, label_pred = torch.max(label_pred, dim=1)
+                # Update the tallies for total examples considered and correctly classified
+                correct += torch.eq(label_gts, label_pred).sum()
+                total += label_gts.shape[0]
+            
+            # At the end, calculate validation accuracy
+            accuracy = correct / total
+            test_acc.append(accuracy.item())
+            print("test accuracy", accuracy)
+            print("test loss", total_class_loss / len(test_dataloader))
+        '''
