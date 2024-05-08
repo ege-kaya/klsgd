@@ -27,9 +27,9 @@ class MultiClassHingeLoss(nn.Module):
         return loss 
 
 def output(data_loader, model, alg, device, train=False):
-    if train is True:
+    if train:
         model.train()
-    elif train is False:
+    else:
         model.eval()
     total_loss = 0    
     total_correct = 0      
@@ -59,13 +59,13 @@ def train(model, optimizer, weight_calculator, loss_fn, train_dataloader, test_d
 
     for epoch in range(epochs):
         if adaptive:
-            if test_acc[-1] >= 99.5:
+            if train_acc[-1] >= 99.5:
                 weight_calculator.topk_ratio = init_topk_ratio / 16
-            elif test_acc[-1] >= 95.:
+            elif train_acc[-1] >= 95.:
                 weight_calculator.topk_ratio = init_topk_ratio / 8
-            elif test_acc[-1] >= 90.:
+            elif train_acc[-1] >= 90.:
                 weight_calculator.topk_ratio = init_topk_ratio / 4
-            elif test_acc[-1] >= 80.:
+            elif train_acc[-1] >= 80.:
                 weight_calculator.topk_ratio = init_topk_ratio / 2
 
         model.train()
@@ -79,20 +79,21 @@ def train(model, optimizer, weight_calculator, loss_fn, train_dataloader, test_d
             label_gts = label_gts.to(device)
             
             # Get the outputs from the model
-            optimizer.zero_grad()
+            model.enable_hooks()
+            model.zero_grad()
             label_pred = model(inputs)
             sample_loss = loss_fn(label_pred, label_gts)
             mean_loss = torch.mean(sample_loss)
-            mean_loss.backward()
+            mean_loss.backward(retain_graph=True)
 
-            if alg != 'sgd':
-                weight_calculator.sample_losses = sample_loss.detach()
-                weights = weight_calculator.calc_weights()
-                optimizer.zero_grad()
-                label_pred = model(inputs)
-                sample_loss2 = loss_fn(label_pred, label_gts)
-                new_loss = torch.sum(weights * sample_loss2)
-                new_loss.backward()
+            weight_calculator.sample_losses = sample_loss.detach()
+            weights = weight_calculator.calc_weights()
+            model.disable_hooks()
+            model.zero_grad()
+            # label_pred = model(inputs)
+            # sample_loss2 = loss_fn(label_pred, label_gts)
+            new_loss = torch.sum(weights.to(device) * sample_loss)
+            new_loss.backward()
 
             optimizer.step()
             # scheduler.step()
@@ -122,19 +123,6 @@ def train(model, optimizer, weight_calculator, loss_fn, train_dataloader, test_d
         print(f"train accuracy: {tr_acc}")
         print(f"test accuracy: {te_acc}")
         print("*"*20)
-    
-        # update the top-k ratio
-        if tr_acc >= 99.5:
-            weight_calculator.topk_ratio = 0.0625
-            optimizer = lr_decay_func(optimizer, lr_decay=0.5)
-        elif tr_acc >= 95.0:
-            weight_calculator.topk_ratio = 0.125
-        elif tr_acc >= 90.0:
-            weight_calculator.topk_ratio = 0.25
-        elif tr_acc >= 80.0:
-            weight_calculator.topk_ratio = 0.5
-
-
 
     return train_loss, test_acc
 
@@ -185,34 +173,34 @@ def plot_acc(fig, save_path, plot_path, seeds, alg):
     #plt.savefig(f"{plot_path}/acc_{alg}.png", dpi=400, bbox_inches="tight")
     return fig 
 
-def make_noisy_data(train_data, noise_type, noise_frac, shift=1):
+def make_noisy_data(train_data, noise_type, noise_frac):
     '''
     This function takes a Dataset and make it noisy Dataset
-    by swapping labels either randomly or deterministically.
+    by adding noise to the features.
     '''
     # get dataset parameters 
     data_size = len(train_data)
     dataloader = torch.utils.data.DataLoader(train_data, batch_size=data_size, shuffle=True)
     (data, target) = next(iter(dataloader))
-    class_labels = sorted(list(torch.unique(target)))
-    num_classes = len(class_labels)
-    # make labels noisy 
+
+    # make features noisy 
     flag = np.random.binomial(1, noise_frac, size=(data_size, 1))
-    target_noisy = copy.deepcopy(target.numpy())
     for idx, val in enumerate(flag):
-        class_idx = class_labels.index(target[idx].item())
-        if val[0] == 1 and noise_type == "directed":
-            out = class_labels[(class_idx + shift) % num_classes]
-        elif val[0] == 1 and noise_type == "random":
-            out = random.choice(class_labels[:class_idx] + class_labels[min(len(class_labels), class_idx+1):])
+        datapoint = data[idx]
+        if val[0] == 1 and noise_type == "feature_add":
+            noise = 100 * torch.randn_like(datapoint)
+            data[idx] += noise
+        elif val[0] == 1 and noise_type == "feature_imp":
+            mask_flags = torch.rand_like(data[idx])
+            mask = torch.zeros_like(data[idx])
+            mask[mask_flags <= 0.9] = 1.
+            mask[mask_flags <= 0.45] = -1.
+            data[idx] += mask
+            data[idx] = torch.clamp(data[idx], min=0., max=1.)
         else:
             continue 
-        target_noisy[idx] = out
-    target_noisy = torch.from_numpy(target_noisy)
-    print("Label shape:", target_noisy.shape)
     print("Data shape:", data.shape)
-    print("Class labels:", class_labels)
-    noisy_data = torch.utils.data.TensorDataset(data, target_noisy)
+    noisy_data = torch.utils.data.TensorDataset(data, target)
     return noisy_data
 
 if __name__ == '__main__':

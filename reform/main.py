@@ -43,14 +43,14 @@ argparser.add_argument("--optimizer", default="sgd", type=str, choices=["sgd", "
                                                               "maxloss_topk", "minloss_topk"],
                                                               help="optimizer to use")
 argparser.add_argument("--reg", default=1e-3, type=float, help="regularizer for KL term")
-argparser.add_argument("--lr", default=1e-3, type=float, help="learning rate") # 1e-3
+argparser.add_argument("--lr", default=5e-2, type=float, help="learning rate") # 1e-3
 argparser.add_argument("--lr_decay", default=0.2, type=float, help="learning rate decay") # 0.2 
 argparser.add_argument("--weight_decay", default=1e-4, type=float, help="weight decay parameter")
 argparser.add_argument("--momentum", default=0.9, type=float, help="momentum parameter")
 argparser.add_argument("--decay_schedule", default=30, type=int, help="decay schedule") # 10? 
 argparser.add_argument("--epochs", default=50, type=int, help="number of epochs for training")
 argparser.add_argument("--device_idx", default=0, type=int, help="cuda device idx")
-argparser.add_argument("--batch_size", default=64, type=int, help="mini-batch size for training") # 64
+argparser.add_argument("--batch_size", default=16, type=int, help="mini-batch size for training") # 64
 argparser.add_argument("--num_workers", default=4, type=int, help="number of workers on cpu for dataloaders")
 # argparser.add_argument("--seed", default=44, type=int, help="random seed")
 argparser.add_argument("--dataset", default="MNIST", type=str, choices=["semeion", "MNIST",
@@ -67,11 +67,12 @@ argparser.add_argument("--topk_ratio", default=1., type=float, help="ratio of th
 argparser.add_argument("--savepath", default="./results", type=str, help="directory for the loss/accuracy history")
 
 # noisy data settings 
-argparser.add_argument("--noisy_data", default=False, action='store_true', help="whether to generate noisy data")
-argparser.add_argument("--noise_frac", default=0.1, type=float, help="fraction of the noisy data")
-argparser.add_argument("--noise_type", default="random", type=str, choices=("shift", "random"), help="type of the noise (i.e. shift or random)")
 argparser.add_argument("--adaptive", default=False, action='store_true', help="whether to use adaptive topk ratio")
 argparser.add_argument('--seeds', nargs="+", type=int, default=[44, 45, 46, 47, 48])
+argparser.add_argument("--noise", default=False, action='store_true', help="whether to use noise")
+argparser.add_argument("--noise_type", default="feature_add", type=str, choices=["feature_add", "feature_imp", "label", "gradient_flip", "gradient_add"], help="noise type")
+argparser.add_argument("--noise_frac", default=0.2, type=float, help="noise ratio")
+
 
 args = argparser.parse_args()
 
@@ -271,9 +272,9 @@ if __name__ == "__main__":
 
         
         # generate noisy data if wanted
-        train_data_split, _ = torch.utils.data.random_split(make_noisy_data(train_data, args.noise_type, args.noise_frac) if args.noisy_data else train_data, [5000, 55000])
+        train_data = make_noisy_data(train_data, args.noise_type, args.noise_frac) if (args.noise and args.noise_type in ["feature_add", "feature_imp"]) else train_data
 
-        train_loader = DataLoader(train_data_split, batch_size=args.batch_size, sampler=train_Sampler, shuffle=Shuffle, drop_last=True)
+        train_loader = DataLoader(train_data, batch_size=args.batch_size, sampler=train_Sampler, shuffle=Shuffle, drop_last=True)
         test_loader = DataLoader(test_data, batch_size=args.batch_size, sampler=test_Sampler, shuffle=False)
 
         model = get_model(args.model)
@@ -281,7 +282,7 @@ if __name__ == "__main__":
             model = GradSampleModule(model)
                 
         #optimizer = get_optimizer(args.optimizer, model)
-        weight_calculator = WeightCalculator(params=model.parameters(), alg_name=args.optimizer, topk_ratio=args.topk_ratio, reg=args.reg)
+        weight_calculator = WeightCalculator(params=model.parameters(), alg_name=args.optimizer, topk_ratio=args.topk_ratio, reg=args.reg, noise=args.noise, noise_type=args.noise_type, noise_frac=args.noise_frac)
         optimizer = torch.optim.SGD(params=model.parameters(), lr=lr, weight_decay=args.weight_decay, momentum=args.momentum)
         # scheduler = lr_scheduler.StepLR(optimizer, step_size=args.decay_sch
         losses, accs = train(model, optimizer, weight_calculator, loss, train_loader, test_loader, epochs, args.optimizer, device, args.adaptive)

@@ -35,19 +35,23 @@ class Adam(object):
 
         
 class WeightCalculator(torch.optim.Optimizer):
-    def __init__(self, params, alg_name, topk_ratio=None, reg=None):
+    def __init__(self, params, alg_name, topk_ratio=None, reg=None, noise=False, noise_type="grad_flip", noise_frac=0.4):
         defaults = dict(lr=0, reg=0)
         super(WeightCalculator, self).__init__(params, defaults)
         self.params = params 
         self.alg_name = alg_name 
-        if 'loss' in alg_name:
-            self.sample_losses = None
+        self.sample_losses = None
         self.topk_ratio = topk_ratio
         self.reg = reg
+        self.noise = noise
+        self.noise_type = noise_type
+        self.noise_frac = noise_frac
     
     def calc_weights(self):
         batch_size = len(self.sample_losses)
-        if 'loss' in self.alg_name:
+        if self.alg_name == "sgd":
+            weights = torch.ones_like(self.sample_losses) / batch_size
+        elif 'loss' in self.alg_name:
             # only sample with the worst loss used 
             if self.alg_name == 'maxloss_hard':
                 idx = torch.argmax(self.sample_losses)
