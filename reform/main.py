@@ -271,9 +271,9 @@ if __name__ == "__main__":
 
         
         # generate noisy data if wanted
-        train_data, _ = torch.utils.data.random_split(make_noisy_data(train_data, args.noise_type, args.noise_frac) if args.noisy_data else train_data, [5000, 55000])
+        train_data_split, _ = torch.utils.data.random_split(make_noisy_data(train_data, args.noise_type, args.noise_frac) if args.noisy_data else train_data, [5000, 55000])
 
-        train_loader = DataLoader(train_data, batch_size=args.batch_size, sampler=train_Sampler, shuffle=Shuffle, drop_last=True)
+        train_loader = DataLoader(train_data_split, batch_size=args.batch_size, sampler=train_Sampler, shuffle=Shuffle, drop_last=True)
         test_loader = DataLoader(test_data, batch_size=args.batch_size, sampler=test_Sampler, shuffle=False)
 
         model = get_model(args.model)
