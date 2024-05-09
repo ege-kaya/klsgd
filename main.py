@@ -12,11 +12,13 @@ import argparse
 from opacus.grad_sample import GradSampleModule
 from opacus.validators.module_validator import ModuleValidator
 from networks import Linear, LeNet, PreActResNet18
-from optimizers import KLSGD
+from optimizers import KLSGD, WeightCalculator, PerSampleOptimizer
 from utils import MultiClassHingeLoss, train, make_noisy_data
 from torch.utils.data.sampler import SubsetRandomSampler
+from attack_manager import get_grad_attack
 from torch.optim import lr_scheduler
 import os
+import yaml
 
 argparser = argparse.ArgumentParser()
 
@@ -31,8 +33,8 @@ maxnorm_topk: 16    minnorm_topk: 17
 maxloss_topk: 18    minloss_topk: 19
 '''
 
-argparser.add_argument("--optimizer", default="sgd", type=str, choices=["sgd", "adam", 
-                                                              "klsgd_r", "klsgd_p", 
+argparser.add_argument("--optimizer", default="sgd", type=str, choices=["sgd", "adam", "poscorr_soft",
+                                                              "maxcorr_soft", "mincorr_soft", 
                                                               "maxloss_hard", "minloss_hard",
                                                               "maxloss_soft", "maxnorm_soft",
                                                               "minloss_soft", "minnorm_soft",
@@ -45,10 +47,12 @@ argparser.add_argument("--optimizer", default="sgd", type=str, choices=["sgd", "
 argparser.add_argument("--reg", default=1e-3, type=float, help="regularizer for KL term")
 argparser.add_argument("--lr", default=1e-2, type=float, help="learning rate") # 1e-3
 argparser.add_argument("--lr_decay", default=0.2, type=float, help="learning rate decay") # 0.2 
+argparser.add_argument("--weight_decay", default=1e-4, type=float, help="weight decay parameter")
+argparser.add_argument("--momentum", default=0.9, type=float, help="momentum parameter")
 argparser.add_argument("--decay_schedule", default=30, type=int, help="decay schedule") # 10? 
-argparser.add_argument("--epochs", default=80, type=int, help="number of epochs for training")
+argparser.add_argument("--epochs", default=50, type=int, help="number of epochs for training")
 argparser.add_argument("--device_idx", default=0, type=int, help="cuda device idx")
-argparser.add_argument("--batch_size", default=16, type=int, help="mini-batch size for training") # 64
+argparser.add_argument("--batch_size", default=64, type=int, help="mini-batch size for training") # 64
 argparser.add_argument("--num_workers", default=4, type=int, help="number of workers on cpu for dataloaders")
 # argparser.add_argument("--seed", default=44, type=int, help="random seed")
 argparser.add_argument("--dataset", default="MNIST", type=str, choices=["semeion", "MNIST",
@@ -59,15 +63,19 @@ argparser.add_argument("--dataset", default="MNIST", type=str, choices=["semeion
 argparser.add_argument("--model", default="LeNet", type=str, choices=["LeNet", "logistic", 
                                                                       "SVM", "ResNet18"])
 argparser.add_argument("--aug", default=False, action='store_true', help="whether to augment data")
-argparser.add_argument("--topk_ratio", default=0.25, type=float, help="ratio of the top-k elements chosen from the batch")
+argparser.add_argument("--topk_ratio", default=1., type=float, help="ratio of the top-k elements chosen from the batch")
 
 # file managment options 
-argparser.add_argument("--save_path", default="./results", type=str, help="directory for the loss/accuracy history")
+argparser.add_argument("--savepath", default="./results", type=str, help="directory for the loss/accuracy history")
 
 # noisy data settings 
-argparser.add_argument("--noisy_data", action='store_true', help="whether to generate noisy data")
-argparser.add_argument("--noise_frac", default=0.1, type=float, help="fraction of the noisy data")
-argparser.add_argument("--noise_type", default="random", type=str, choices=("shift", "random"), help="type of the noise (i.e. shift or random)")
+argparser.add_argument("--adaptive", default=False, action='store_true', help="whether to use adaptive topk ratio")
+argparser.add_argument('--seeds', nargs="+", type=int, default=[44, 45, 46]) # 47, 48]
+argparser.add_argument("--noise", default=False, action='store_true', help="whether to use noise")
+argparser.add_argument("--noise_type", default="feature_add", type=str, choices=["feature_add", "feature_imp", "label", "gradient_flip", "gradient_add"], help="noise type")
+argparser.add_argument("--noise_frac", default=0.2, type=float, help="noise ratio")
+
+argparser.add_argument("--attack_config", default="./attack_manager/attack_config.yaml", type=str, help="path for the attach config file (only valid for gradient type attacks)")
 
 
 args = argparser.parse_args()
@@ -85,9 +93,9 @@ train_Sampler = None
 test_Sampler = None
 Shuffle = True
 epochs = args.epochs
-save_path = args.save_path #"./results"
+save_path = args.savepath #"./results"
 #plot_path = "./plots"
-seeds = [44, 45, 46] #47, 48]
+seeds = args.seeds
 
 os.makedirs(data_path, exist_ok=True)
 os.makedirs(save_path, exist_ok=True)
@@ -245,58 +253,6 @@ def get_model(model_name):
     
     return ModuleValidator.fix(model)
 
-
-'''
-OPTIMIZER SELECTION
-'''
-def get_optimizer(optimizer_name, model):
-    optimizer = None
-    if optimizer_name == "sgd":
-        optimizer = torch.optim.SGD(params=model.parameters(), lr=lr)
-    elif optimizer_name == "adam":
-        optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
-    elif optimizer_name == "klsgd_r":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, robust=True)
-    elif optimizer_name == "klsgd_p":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg)
-    elif optimizer_name == "maxloss_hard":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=4)
-    elif optimizer_name == "minloss_hard":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=5)
-    elif optimizer_name == "maxloss_soft":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, alg_no=6)
-    elif optimizer_name == "maxnorm_soft":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, alg_no=7)
-    elif optimizer_name == "minloss_soft":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, alg_no=8)
-    elif optimizer_name == "minnorm_soft":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, reg=reg, alg_no=9)
-    elif optimizer_name == "maxnorm_hard":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=10)
-    elif optimizer_name == "minnorm_hard":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=11)
-    elif optimizer_name == "maxcorr_hard":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=12)
-    elif optimizer_name == "mincorr_hard":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=13)
-    elif optimizer_name == "maxcorr_topk":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=14, topk=topk_ratio)
-    elif optimizer_name == "mincorr_topk":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=15, topk=topk_ratio)
-    elif optimizer_name == "maxnorm_topk":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=16, topk=topk_ratio)
-    elif optimizer_name == "minnorm_topk":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=17, topk=topk_ratio)
-    elif optimizer_name == "maxloss_topk":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=18, topk=topk_ratio)
-    elif optimizer_name == "minloss_topk":
-        optimizer = KLSGD(params=model.parameters(), lr=lr, alg_no=1, topk=topk_ratio)
-    else:
-        raise ValueError(f"Invalid optimizer: {args.optimizer}")
-    
-    return optimizer
-
-
 '''
 LOSS SELECTION
 '''
@@ -320,25 +276,50 @@ if __name__ == "__main__":
 
         
         # generate noisy data if wanted
-        train_data = make_noisy_data(train_data, args.noise_type, args.noise_frac) if args.noisy_data else train_data
+        train_data = make_noisy_data(train_data, args.noise_type, args.noise_frac) if (args.noise and args.noise_type in ["feature_add", "feature_imp"]) else train_data
 
-        train_loader = DataLoader(train_data, batch_size=args.batch_size, sampler=train_Sampler, shuffle=Shuffle)
+        train_loader = DataLoader(train_data, batch_size=args.batch_size, sampler=train_Sampler, shuffle=Shuffle, drop_last=True)
         test_loader = DataLoader(test_data, batch_size=args.batch_size, sampler=test_Sampler, shuffle=False)
 
         model = get_model(args.model)
-        if not args.optimizer == "sgd" and not args.optimizer == "adam":
+        #if not args.optimizer == "sgd" and not args.optimizer == "adam":
+        case1 = args.optimizer == 'sgd' and args.noise_type in ('gradient_add', 'gradient_flip')
+        case2 = args.optimizer in ('sgd', 'adam') and args.noise_type in ('feature_add', 'feature_imp', 'label')
+        if case1 or not case2:
             model = GradSampleModule(model)
                 
-        optimizer = get_optimizer(args.optimizer, model)
-        # scheduler = lr_scheduler.StepLR(optimizer, step_size=args.decay_schedule, gamma=args.lr_decay)
-        losses, accs = train(model, optimizer, loss, train_loader, test_loader, epochs, args.optimizer, device)
+        #optimizer = get_optimizer(args.optimizer, model)
+        if args.noise_type in ('gradient_flip', 'gradient_add'):
+
+            with open(args.attack_config, 'r') as yaml_file:
+                attack_config = yaml.safe_load(yaml_file)
+
+            grad_attacker = get_grad_attack(attack_config)
+
+            optimizer = PerSampleOptimizer(
+                params=model.parameters(),
+                alg_name=args.optimizer,
+                topk_ratio=args.topk_ratio,
+                reg=args.reg, 
+                noise=args.noise, 
+                noise_type=args.noise_type, 
+                noise_frac=args.noise_frac,
+                lr=args.lr,
+                momentum=args.momentum, 
+                dampening=0, 
+                weight_decay=args.weight_decay, 
+                grad_attacker=grad_attacker,
+                nesterov=False 
+            )
+            weight_calculator = optimizer
+        else:
+            weight_calculator = WeightCalculator(params=model.parameters(), alg_name=args.optimizer, topk_ratio=args.topk_ratio, reg=args.reg, noise=args.noise, noise_type=args.noise_type, noise_frac=args.noise_frac)
+            optimizer = torch.optim.SGD(params=model.parameters(), lr=lr, weight_decay=args.weight_decay, momentum=args.momentum)
+        # scheduler = lr_scheduler.StepLR(optimizer, step_size=args.decay_sch
+        losses, accs = train(model, optimizer, weight_calculator, loss, train_loader, test_loader, epochs, args.optimizer, device, args.adaptive)
 
         with open(f"{save_path}/acc_{args.optimizer}_{seed}_{lr}.pkl", "wb") as f:
             pkl.dump(accs, f)
         
         with open(f"{save_path}/loss_{args.optimizer}_{seed}_{lr}.pkl", "wb") as f:
             pkl.dump(losses, f)
-
-
-
-

@@ -1,0 +1,13 @@
+
+# Gradient attack with additive Gaussian noise
+
+{ "rand_additive_attack_conf": 
+    {
+      "noise_dist": "gaussian",
+      "attack_std": 0.1,
+      "mean_shift": 0
+    },
+  "attack_model": "additive", 
+  "frac_adv": 0.2,
+  "attack_mode": "un_coordinated"
+}
