@@ -34,6 +34,294 @@ class Adam(object):
         return new_update
 
         
+class WeightCalculator(torch.optim.Optimizer):
+    def __init__(self, params, alg_name, topk_ratio=None, reg=None, noise=False, noise_type="grad_flip", noise_frac=0.4):
+        defaults = dict(lr=0, reg=0)
+        super(WeightCalculator, self).__init__(params, defaults)
+        self.params = params 
+        self.alg_name = alg_name 
+        self.sample_losses = None
+        self.topk_ratio = topk_ratio
+        self.reg = reg
+        self.noise = noise
+        self.noise_type = noise_type
+        self.noise_frac = noise_frac
+
+        # initialize param and gradient and momentum dictionaries 
+    
+    def calc_weights(self):
+        batch_size = len(self.sample_losses)
+        if self.alg_name == "sgd":
+            weights = torch.ones_like(self.sample_losses) / batch_size
+        elif 'loss' in self.alg_name:
+            # only sample with the worst loss used 
+            if self.alg_name == 'maxloss_hard':
+                idx = torch.argmax(self.sample_losses)
+                mask = torch.zeros_like(self.sample_losses)
+                mask[idx] = 1
+                weights = mask 
+            # only sample with the best loss used
+            elif self.alg_name == 'minloss_hard':
+                idx = torch.argmin(self.sample_losses)
+                mask = torch.zeros_like(self.sample_losses)
+                mask[idx] = 1
+                weights = mask
+            # using loss in exponential 
+            elif self.alg_name == 'maxloss_soft':
+                weights = F.softmax(self.sample_losses / self.reg, dim=0)
+            # using negative loss in exponential
+            elif self.alg_name == 'minloss_soft':
+                weights = F.softmax(-self.sample_losses / self.reg, dim=0)
+            # max loss topk
+            elif self.alg_name == 'maxloss_topk':
+                k=int(self.topk_ratio * batch_size)
+                _, indices = torch.topk(self.sample_losses, k=k)
+                mask = torch.zeros_like(self.sample_losses)
+                mask[indices] = 1/k
+                weights = mask
+            elif self.alg_name == 'minloss_topk':
+                k = int(self.topk_ratio * batch_size)
+                _, indices = torch.topk(self.sample_losses, k=k, largest=False)
+                mask = torch.zeros_like(self.sample_losses)
+                mask[indices] = 1/k
+                weights = mask 
+            else:
+                raise ValueError("Invalid algorithm name!")
+        else:
+            total_weight = 0
+            layer_count = 0
+            for group in self.param_groups:
+                for p in group["params"]:
+                    if type(p.grad_sample) is list:
+                        p.grad_sample = p.grad_sample[-1]
+
+                    layer_count += 1
+                    # only sample with the largest/smallest gradient norm 
+                    if 'norm' in self.alg_name:
+                        total_weight += torch.sum(torch.flatten(p.grad_sample, 1) ** 2, dim=1)
+                    # only sample with the largest/negative positive correlation 
+                    elif 'corr' in self.alg_name:
+                        total_weight += torch.sum(torch.flatten(p.grad) * torch.flatten(p.grad_sample, 1), dim=1) / self.reg 
+                    # using gradient norm in exponential
+                    elif self.alg_name == 'maxnorm_soft':
+                        total_weight += torch.flatten(p.grad_sample, 1)**2 / self.reg
+                    # using negative gradient norm in exponential
+                    elif self.alg_name == 'minnorm_soft':
+                        total_weight += -torch.flatten(p.grad_sample, 1)**2 / self.regression  
+
+            if self.alg_name in ['maxnorm_hard', 'maxcorr_hard']:
+                idx = torch.argmax(total_weight)
+                mask = torch.zeros_like(total_weight)
+                mask[idx] = 1 
+                weights = mask
+                #weights = torch.tile(mask[None,:], (layer_count, 1))
+            # choose maximum top-k elements
+            elif self.alg_name in ['maxcorr_topk', 'maxnorm_topk']:
+                k = int(self.topk_ratio * batch_size)
+                _, indices = torch.topk(total_weight, k=k)
+                mask = torch.zeros_like(self.sample_losses)
+                mask[indices] = 1/k
+                weights = mask
+                #weights = torch.tile(mask[None,:], (layer_count, 1))
+            elif self.alg_name in ['minnorm_hard', 'mincorr_hard']:
+                idx = torch.argmin(total_weight)
+                mask = torch.zeros_like(total_weight)
+                mask[idx] = 1 
+                weights = mask
+                #weights = torch.tile(mask[None,:], (layer_count, 1))
+            # choose minimum top-k elements
+            elif self.alg_name in ['mincorr_topk', 'minnorm_topk']:
+                k = int(self.topk_ratio * len(total_weight))
+                _, indices = torch.topk(total_weight, k=k, largest=False)
+                mask = torch.zeros_like(self.sample_losses)
+                mask[indices] = 1/k 
+                weights = mask
+            elif self.alg_name in ['maxcorr_soft', 'mincorr_soft', 'maxnorm_soft', 'minnorm_soft', 'poscorr_soft']:
+                if self.alg_name == 'poscorr_soft':
+                    total_weight = torch.where(total_weight > 0, total_weight, 0)
+                elif 'min' in self.alg_name:
+                    total_weight *= -1 
+                weights = F.softmax(total_weight, dim=0)
+
+        return weights
+
+
+class PerSampleOptimizer(torch.optim.Optimizer):
+    def __init__(self,
+        params,
+        alg_name, 
+        topk_ratio=None,
+        reg=None,
+        noise=False,
+        noise_type="grad_flip",
+        noise_frac=0.4,
+        lr=0.01, 
+        momentum=0,
+        dampening=0, 
+        weight_decay=0, 
+        grad_attacker=None,
+        nesterov=False
+    ):
+        defaults = dict(lr=lr, momentum=momentum, dampening=dampening, weight_decay=weight_decay, nesterov=nesterov)
+        super(PerSampleOptimizer, self).__init__(params, defaults)
+        self.params = params 
+        self.alg_name = alg_name 
+        self.sample_losses = None
+        self.topk_ratio = topk_ratio
+        self.reg = reg
+        self.noise = noise
+        self.noise_type = noise_type
+        self.noise_frac = noise_frac
+        self.grad_attacker = grad_attacker
+        print("Limbas?", self.grad_attacker)
+
+        # initialize param and gradient and momentum dictionaries 
+    
+    def calc_weights(self):
+        batch_size = len(self.sample_losses)
+        if self.alg_name == "sgd":
+            weights = torch.ones_like(self.sample_losses) / batch_size
+        elif 'loss' in self.alg_name:
+            # only sample with the worst loss used 
+            if self.alg_name == 'maxloss_hard':
+                idx = torch.argmax(self.sample_losses)
+                mask = torch.zeros_like(self.sample_losses)
+                mask[idx] = 1
+                weights = mask 
+            # only sample with the best loss used
+            elif self.alg_name == 'minloss_hard':
+                idx = torch.argmin(self.sample_losses)
+                mask = torch.zeros_like(self.sample_losses)
+                mask[idx] = 1
+                weights = mask
+            # using loss in exponential 
+            elif self.alg_name == 'maxloss_soft':
+                weights = F.softmax(self.sample_losses / self.reg, dim=0)
+            # using negative loss in exponential
+            elif self.alg_name == 'minloss_soft':
+                weights = F.softmax(-self.sample_losses / self.reg, dim=0)
+            # max loss topk
+            elif self.alg_name == 'maxloss_topk':
+                k=int(self.topk_ratio * batch_size)
+                _, indices = torch.topk(self.sample_losses, k=k)
+                mask = torch.zeros_like(self.sample_losses)
+                mask[indices] = 1/k
+                weights = mask
+            elif self.alg_name == 'minloss_topk':
+                k = int(self.topk_ratio * batch_size)
+                _, indices = torch.topk(self.sample_losses, k=k, largest=False)
+                mask = torch.zeros_like(self.sample_losses)
+                mask[indices] = 1/k
+                weights = mask 
+            else:
+                raise ValueError("Invalid algorithm name!")
+        else:
+            total_weight = 0
+            layer_count = 0
+            for group in self.param_groups:
+                for p in group["params"]:
+
+                    if type(p.grad_sample) is list:
+                        p.grad_sample = p.grad_sample[-1]
+                        
+                    if self.grad_attacker is not None:
+                        p.grad_sample = self.grad_attacker.launch_attack(p.grad_sample, seed=layer_count)
+
+                    layer_count += 1
+                    # only sample with the largest/smallest gradient norm 
+                    if 'norm' in self.alg_name:
+                        total_weight += torch.sum(torch.flatten(p.grad_sample, 1) ** 2, dim=1)
+                    # only sample with the largest/negative positive correlation 
+                    elif 'corr' in self.alg_name:
+                        total_weight += torch.sum(torch.flatten(p.grad) * torch.flatten(p.grad_sample, 1), dim=1) / self.reg 
+                    # using gradient norm in exponential
+                    elif self.alg_name == 'maxnorm_soft':
+                        total_weight += torch.flatten(p.grad_sample, 1)**2 / self.reg
+                    # using negative gradient norm in exponential
+                    elif self.alg_name == 'minnorm_soft':
+                        total_weight += -torch.flatten(p.grad_sample, 1)**2 / self.regression  
+
+            if self.alg_name in ['maxnorm_hard', 'maxcorr_hard']:
+                idx = torch.argmax(total_weight)
+                mask = torch.zeros_like(total_weight)
+                mask[idx] = 1 
+                weights = mask
+                #weights = torch.tile(mask[None,:], (layer_count, 1))
+            # choose maximum top-k elements
+            elif self.alg_name in ['maxcorr_topk', 'maxnorm_topk']:
+                k = int(self.topk_ratio * batch_size)
+                _, indices = torch.topk(total_weight, k=k)
+                mask = torch.zeros_like(self.sample_losses)
+                mask[indices] = 1/k
+                weights = mask
+                #weights = torch.tile(mask[None,:], (layer_count, 1))
+            elif self.alg_name in ['minnorm_hard', 'mincorr_hard']:
+                idx = torch.argmin(total_weight)
+                mask = torch.zeros_like(total_weight)
+                mask[idx] = 1 
+                weights = mask
+                #weights = torch.tile(mask[None,:], (layer_count, 1))
+            # choose minimum top-k elements
+            elif self.alg_name in ['mincorr_topk', 'minnorm_topk']:
+                k = int(self.topk_ratio * len(total_weight))
+                _, indices = torch.topk(total_weight, k=k, largest=False)
+                mask = torch.zeros_like(self.sample_losses)
+                mask[indices] = 1/k 
+                weights = mask
+            elif self.alg_name in ['maxcorr_soft', 'mincorr_soft', 'maxnorm_soft', 'minnorm_soft', 'poscorr_soft']:
+                if self.alg_name == 'poscorr_soft':
+                    total_weight = torch.where(total_weight > 0, total_weight, 0)
+                elif 'min' in self.alg_name:
+                    total_weight *= -1 
+                weights = F.softmax(total_weight, dim=0)
+
+        return weights
+    
+    def step(self, closure=None):
+        weights = self.calc_weights()
+        #print("Weights shape:", weights.shape)
+        layer_count = 0
+        # calculate the estimate of the gradient 
+        for group in self.param_groups:
+            # get SGD parameters 
+            weight_decay = group['weight_decay']
+            momentum = group['momentum']
+            dampening = group['dampening']
+            nesterov = group['nesterov']
+
+            for p in group["params"]:
+                # estimate the gradient (different than mini-batch)
+                #weight = weights[idx]
+                grad_est = torch.zeros_like(p.grad)
+
+                if type(p.grad_sample) is list:
+                    p.grad_sample = p.grad_sample[-1]
+                
+                if self.grad_attacker is not None:
+                    p.grad_sample = self.grad_attacker.launch_attack(p.grad_sample, seed=layer_count)
+
+                layer_count += 1
+                product = weights.view(-1, *([1] * (p.grad_sample.dim() - 1))) * p.grad_sample
+                grad_est.add_(torch.sum(product, axis=0))
+
+                # perform SGD steps like weight decay, momentum, etc. 
+                if weight_decay != 0:
+                    grad_est.add_(p.data, alpha=weight_decay)
+                if momentum != 0:
+                    param_state = self.state[p]
+                    if 'momentum_buffer' not in param_state:
+                        buf = param_state['momentum_buffer'] = torch.zeros_like(p.data)
+                    else:
+                        buf = param_state['momentum_buffer']
+                    buf.mul_(momentum).add_(grad_est, alpha=1-dampening)
+
+                    if nesterov:
+                        grad_est.add_(buf, alpha=momentum)
+                    else: 
+                        grad_est = buf 
+
+                p.data.add_(grad_est, alpha=-group['lr'])
+            
 
 class KLSGD(torch.optim.Optimizer):
     def __init__(self, params, robust=False, lr=1e-3, reg=0.5, adam=False, alg_no=-1, topk=None):
