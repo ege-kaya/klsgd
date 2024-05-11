@@ -46,13 +46,15 @@ class WeightCalculator(torch.optim.Optimizer):
         self.noise = noise
         self.noise_type = noise_type
         self.noise_frac = noise_frac
-
         # initialize param and gradient and momentum dictionaries 
     
     def calc_weights(self):
         batch_size = len(self.sample_losses)
         if self.alg_name == "sgd":
-            weights = torch.ones_like(self.sample_losses) / batch_size
+            k=int(self.topk_ratio * batch_size)
+            idxs = random.choice(torch.arange(batch_size))
+            weights = torch.zeros_like(self.sample_losses)
+            weights[idxs] = 1/k
         elif 'loss' in self.alg_name:
             # only sample with the worst loss used 
             if self.alg_name == 'maxloss_hard':
@@ -173,7 +175,6 @@ class PerSampleOptimizer(torch.optim.Optimizer):
         self.noise_type = noise_type
         self.noise_frac = noise_frac
         self.grad_attacker = grad_attacker
-        print("Limbas?", self.grad_attacker)
 
         # initialize param and gradient and momentum dictionaries 
     

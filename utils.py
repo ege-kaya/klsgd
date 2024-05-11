@@ -12,7 +12,7 @@ import random
 import torch.nn.functional as F 
 
 
-class MultiClassHingeLoss(nn.Module):
+class MultiClassHingeLoss(nn.Module): 
     def __init__(self, reduction="mean"):
         super(MultiClassHingeLoss, self).__init__()
         self.reduction = reduction
@@ -51,6 +51,73 @@ def output(data_loader, model, alg, device, train=False):
     total_acc = 100. * float(total_correct) / float(total_size)  
     return (total_loss, total_acc)  
     
+
+def train4sgd(model, optimizer, weight_calculator, loss_fn, train_dataloader, test_dataloader, epochs, device, manual_sgd):
+
+    train_loss, train_acc, test_loss, test_acc = [],[0.],[],[0.]
+    # Keep track of the classification and regression losses for plotting later.
+    model = model.to(device)
+    print(f"Using device: {device}")
+
+
+    for epoch in range(epochs):
+
+        model.train()
+        # Keeping track of running losses.
+        class_running_loss = 0.
+        for i, data in enumerate(train_dataloader):
+            
+            # Get the inputs and the labels, put them on cuda
+            inputs, label_gts = data
+            inputs = inputs.to(device)
+            label_gts = label_gts.to(device)
+            
+            model.zero_grad()
+            if manual_sgd:
+                label_pred = model(inputs)
+                sample_loss = loss_fn(label_pred, label_gts)
+                optimizer.sample_losses = sample_loss 
+                mean_loss = torch.mean(sample_loss)
+                mean_loss.backward()
+            else:
+                label_pred = model(inputs)
+                sample_loss = loss_fn(label_pred, label_gts)
+                mean_loss = torch.mean(sample_loss)
+                mean_loss.backward()
+
+            optimizer.step()
+            # scheduler.step()
+            
+            # Update the running losses.
+            class_running_loss += mean_loss.item()
+    
+            # Just some user feedback reporting the losses.
+            if (i+1) % 50 == 0:
+                mean_loss = class_running_loss / 50
+                if (i+1) % 100 == 0:
+                    print("[epoch: %d, batch: %5d] class. loss: %.3f" % (epoch+1, i+1, mean_loss))
+                class_running_loss = 0.0
+                #train_loss.append(mean_loss)
+
+        #optimizer = lr_scheduler(optimizer, epoch + 1)
+        # evaluate the loss & accuracy of the model over train & test datasets 
+        (tr_loss, tr_acc) = output(train_dataloader, model, 'sgd', device, train=False)
+        (te_loss, te_acc) = output(test_dataloader, model, 'sgd', device, train=False)
+        # save the losses & accuracies 
+        train_loss.append(tr_loss)
+        train_acc.append(tr_acc)
+        test_loss.append(te_loss)
+        test_acc.append(te_acc)
+
+        # display the values 
+        print("*"*10, f"EPOCH {epoch + 1}", "*"*10)
+        print(f"train accuracy: {tr_acc}")
+        print(f"test accuracy: {te_acc}")
+        print("*"*20)
+
+    return train_loss, test_acc
+
+
 def train(model, optimizer, weight_calculator, loss_fn, train_dataloader, test_dataloader, epochs, alg, device, adaptive):
 
     train_loss, train_acc, test_loss, test_acc = [],[0.],[],[0.]
@@ -89,6 +156,12 @@ def train(model, optimizer, weight_calculator, loss_fn, train_dataloader, test_d
                 mean_loss = torch.mean(sample_loss)
                 mean_loss.backward()
             elif alg == 'sgd':
+                # choose uniformly from mini-batch 
+                batch_size = len(inputs)
+                k = int(weight_calculator.topk_ratio * batch_size)
+                idxs = torch.randperm(batch_size)[:k]
+                inputs, label_gts = inputs[idxs], label_gts[idxs]
+                # forward-backward pass 
                 label_pred = model(inputs)
                 sample_loss = loss_fn(label_pred, label_gts)
                 mean_loss = torch.mean(sample_loss)

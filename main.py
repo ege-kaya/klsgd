@@ -287,6 +287,7 @@ if __name__ == "__main__":
         case2 = args.optimizer in ('sgd', 'adam') and args.noise_type in ('feature_add', 'feature_imp', 'label')
         if case1 or not case2:
             model = GradSampleModule(model)
+        # if the algorithm is hard, set the topk ratio to 1/batch_size 
                 
         #optimizer = get_optimizer(args.optimizer, model)
         if args.noise_type in ('gradient_flip', 'gradient_add'):
@@ -295,6 +296,7 @@ if __name__ == "__main__":
                 attack_config = yaml.safe_load(yaml_file)
 
             grad_attacker = get_grad_attack(attack_config)
+            grad_attacker.frac_adv = args.noise_frac
 
             optimizer = PerSampleOptimizer(
                 params=model.parameters(),
