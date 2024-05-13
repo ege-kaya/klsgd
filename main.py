@@ -42,7 +42,10 @@ argparser.add_argument("--optimizer", default="sgd", type=str, choices=["sgd", "
                                                               "maxcorr_hard", "mincorr_hard",
                                                               "maxcorr_topk", "mincorr_topk",
                                                               "maxnorm_topk", "minnorm_topk",
-                                                              "maxloss_topk", "minloss_topk"],
+                                                              "maxloss_topk", "minloss_topk",
+                                                              # signed max norm algorithms 
+                                                              "smaxnorm_topk", "sminnorm_topk",
+                                                              "smaxnorm_hard", "sminnorm_hard"],
                                                               help="optimizer to use")
 argparser.add_argument("--reg", default=1e-3, type=float, help="regularizer for KL term")
 argparser.add_argument("--lr", default=1e-2, type=float, help="learning rate") # 1e-3
@@ -63,7 +66,7 @@ argparser.add_argument("--dataset", default="MNIST", type=str, choices=["semeion
 argparser.add_argument("--model", default="LeNet", type=str, choices=["LeNet", "logistic", 
                                                                       "SVM", "ResNet18"])
 argparser.add_argument("--aug", default=False, action='store_true', help="whether to augment data")
-argparser.add_argument("--topk_ratio", default=1., type=float, help="ratio of the top-k elements chosen from the batch")
+argparser.add_argument("--topk_ratio", default=1., type=float, help="ratio of the top-k elements chosen from the batch if between [0,1] else number of samples chosen from batch")
 
 # file managment options 
 argparser.add_argument("--savepath", default="./results", type=str, help="directory for the loss/accuracy history")
@@ -74,6 +77,9 @@ argparser.add_argument('--seeds', nargs="+", type=int, default=[44, 45, 46]) # 4
 argparser.add_argument("--noise", default=False, action='store_true', help="whether to use noise")
 argparser.add_argument("--noise_type", default="feature_add", type=str, choices=["feature_add", "feature_imp", "label", "gradient_flip", "gradient_add"], help="noise type")
 argparser.add_argument("--noise_frac", default=0.2, type=float, help="noise ratio")
+
+# normalized gradient 
+argparser.add_argument("--normalized_grads", default=False, action='store_true', help='whether to use normalized gradients')
 
 argparser.add_argument("--attack_config", default="./attack_manager/attack_config.yaml", type=str, help="path for the attach config file (only valid for gradient type attacks)")
 
@@ -315,7 +321,15 @@ if __name__ == "__main__":
             )
             weight_calculator = optimizer
         else:
-            weight_calculator = WeightCalculator(params=model.parameters(), alg_name=args.optimizer, topk_ratio=args.topk_ratio, reg=args.reg, noise=args.noise, noise_type=args.noise_type, noise_frac=args.noise_frac)
+            weight_calculator = WeightCalculator(
+                params=model.parameters(),
+                alg_name=args.optimizer,
+                topk_ratio=args.topk_ratio,
+                reg=args.reg, noise=args.noise,
+                noise_type=args.noise_type,
+                noise_frac=args.noise_frac,
+                normalized_grads=args.normalized_grads
+            )
             optimizer = torch.optim.SGD(params=model.parameters(), lr=lr, weight_decay=args.weight_decay, momentum=args.momentum)
         # scheduler = lr_scheduler.StepLR(optimizer, step_size=args.decay_sch
         losses, accs = train(model, optimizer, weight_calculator, loss, train_loader, test_loader, epochs, args.optimizer, device, args.adaptive)
